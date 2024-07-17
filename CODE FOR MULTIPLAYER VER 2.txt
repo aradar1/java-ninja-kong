@@ -1,0 +1,369 @@
+/*
+ * To change this license header, choose License Headers in Project Properties.
+ * To change this template file, choose Tools | Templates
+ * and open the template in the editor.
+ */
+package Game_Canvas;
+
+import Database.IRepository;
+import Database.DBCaller;
+import Database.PlayerRepository;
+import Enums.Direction;
+import Models.Player;
+import Events.Game_Events;
+import java.awt.Canvas;
+import java.awt.Color;
+import java.awt.Graphics;
+import java.awt.event.KeyEvent;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
+import Interfaces.IAction;
+import Models.Flag;
+import Models.Kunai;
+import Models.Ladder;
+import Models.Platform;
+import java.awt.Font;
+import java.awt.Image;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import javax.swing.ImageIcon;
+
+/**
+ *
+ * @author R312-Lab
+ */
+public class Game_Canvas extends Canvas{
+    
+    private int gameTimer = 60;
+    private int score;
+    private int pcID = 1;
+    private boolean levelCleared;
+    
+    private final Timer timer;
+    private final TimerTask gameCanvasTask;
+    private final TimerTask kunaiTask;  
+    private final TimerTask gameTimerTask;
+    private final TimerTask dbTask;
+    private TimerTask movementTask;
+    private Game_Events events;
+    private DBCaller dbCall = new DBCaller();
+    
+    
+    private Player player;
+    
+    private List<Integer> keysPressed;
+    private List<Platform> platform = new ArrayList();
+    private List<Ladder> ladders = new ArrayList();
+    private List<Kunai> kunais  = new ArrayList();
+    private List<Flag> flags = new ArrayList();
+    
+    private int[][] platformLocation = {
+        {0,400},
+        {0,288},
+        {0,176}
+    };
+    private int[][] ladderLocation = {
+        {400,289},
+        {60,177},
+    };
+    private int[][] flagLocation = {
+        {350, 362},
+        {90, 250},
+        {400, 138},
+    };
+    
+    public Game_Canvas(Player p) {
+        this.player = p;
+        this.pcID = p.getId();
+        createGameObjects();
+        
+        timer = new Timer(true);
+        keysPressed = new ArrayList();
+        events = new Game_Events(this);
+        
+        dbTask = new TimerTask(){
+            @Override
+            public void run() {
+                // UPDATE RESOURCES FROM DB
+                try {
+                    if(dbCall.checkId(new PlayerRepository(), player.getId()) <= 0)
+                        dbCall.create(new PlayerRepository(), player);
+                    else if (dbCall.checkId(new PlayerRepository(), p.getId()) <= 0)
+                        dbCall.create(new PlayerRepository(), p);
+                    
+                    player = dbCall.get(new PlayerRepository(), player);
+                } catch (ClassNotFoundException | InstantiationException | IllegalAccessException ex) {
+                    Logger.getLogger(Game_Canvas.class.getName()).log(Level.SEVERE, null, ex);
+                }
+            }
+        };
+        
+        
+        gameCanvasTask = new TimerTask(){
+            @Override
+            public void run() {
+                // UPDATE SCREEN
+                repaint(); 
+               
+                playerCollsion(player);
+                playerCollsion(p);
+                if((player.isDead() && p.isDead()) || levelCleared){
+//                    movementTask.cancel();
+//                    kunaiTask.cancel();
+//                    gameTimerTask.cancel();
+                }
+
+            }
+        };
+        
+        movementTask = new TimerTask(){
+            @Override
+            public void run() {
+                try {
+                    keyPressed(new Player_Actions(), player); // Actions for players    
+                    if(player.hasUpdate() && pcID == player.getId())
+                        dbCall.update(new PlayerRepository(), player);
+                    else if (p.hasUpdate())
+                        dbCall.update(new PlayerRepository(), p);
+                } catch (ClassNotFoundException | InstantiationException | IllegalAccessException ex) {
+                    Logger.getLogger(Game_Canvas.class.getName()).log(Level.SEVERE, null, ex);
+                }
+            }
+        };
+        
+        kunaiTask = new TimerTask(){
+            @Override
+            public void run() {
+                kunaiMove();
+            }
+        };
+        gameTimerTask = new TimerTask(){
+            @Override
+            public void run() {
+                gameTimer--;
+            }  
+        };
+        
+        timer.schedule(dbTask, 0, 120);
+        timer.schedule(gameCanvasTask, 0,120);
+        timer.schedule(movementTask, 0, 120);
+        timer.schedule(kunaiTask, 0, 75);
+        timer.schedule(gameTimerTask, 0, 1000);
+        setFocusable(true);
+        setBackground(Color.BLACK);
+        addKeyListener(events);
+    }
+
+    // Behaviors
+    private void playerCollsion(Player player){
+        if(keysPressed.size() > 0){
+            for(Ladder ladder : ladders){
+                if(Collision.hasCollide(player, ladder)){
+                    player.setCanClimb(true);
+                    player.setCanJump(false);
+                }
+            }
+            for(Platform wall : platform){
+                Direction direction = Collision.getCollisionDirection(player, wall);
+                if(direction != Direction.DOWN && player.getCollisionSize() == 0)
+                    player.setClimbing(true);
+                else if(direction == Direction.DOWN){
+                    player.setClimbing(false);
+                    player.setCanJump(true);
+                }
+                player.addCollision(direction);
+            }
+
+            for(Flag flag : flags){
+                if(Collision.hasCollide(player, flag)){
+                    flags.remove(flag);
+                    score++;
+                    if(flags.isEmpty())
+                        levelCleared = true;
+                    break;
+                }
+            }
+        }
+        for(Kunai kunai : kunais){
+            if(Collision.hasCollide(player, kunai) || gameTimer <= 0){
+                try {
+                    //Uncomment to implement death
+//                    player.setDead(true);
+                    if(pcID == player.getId())
+                        dbCall.update(new PlayerRepository(), player);
+                } catch (ClassNotFoundException ex) {
+                    Logger.getLogger(Game_Canvas.class.getName()).log(Level.SEVERE, null, ex);
+                } catch (InstantiationException ex) {
+                    Logger.getLogger(Game_Canvas.class.getName()).log(Level.SEVERE, null, ex);
+                } catch (IllegalAccessException ex) {
+                    Logger.getLogger(Game_Canvas.class.getName()).log(Level.SEVERE, null, ex);
+                }
+            }
+        }
+    }
+    
+    private void kunaiMove(){
+        for(Kunai kunai : kunais)
+            kunai.move();
+    }
+    
+    private void createGameObjects(){
+        
+        // Create walls
+        for(int[] location : platformLocation)
+            platform.add(new Platform(location[0], location[1], "Images/Wall/1"));
+        
+        
+        // Create player
+        
+        
+        // Create ladders
+        for(int[] location : ladderLocation)
+            ladders.add(new Ladder(location[0], location[1], "Images/Ladder/1"));
+        
+        // Create flags
+        for(int[] location : flagLocation)
+            flags.add(new Flag(location[0], location[1], "Images/Flag/1"));
+        
+        // Create kunais
+        kunais.add(new Kunai(500, 385, "Images/Kunai/2", Direction.RIGHT, 9));
+        kunais.add(new Kunai(0, 275, "Images/Kunai/1", Direction.LEFT, 10));
+        kunais.add(new Kunai(190, 160, "Images/Kunai/2", Direction.RIGHT, 11));
+        kunais.add(new Kunai(500, 160, "Images/Kunai/2", Direction.RIGHT, 11));
+            
+    }
+    
+    public void addGameAction(int keyCode){
+        if(!keysPressed.contains(keyCode))
+            keysPressed.add(keyCode);
+    }
+    
+    public void removeGameAction(int keyCode){
+        for(int i=0; i<this.keysPressed.size(); i++)
+            if(this.keysPressed.get(i) == keyCode)
+                keysPressed.remove(i);
+    }
+    
+    public void keyPressed(IAction entity_Action, Player p) throws ClassNotFoundException, InstantiationException, IllegalAccessException{
+        if (keysPressed.size() <= 0)
+            return;
+        for(int i=0; i<this.keysPressed.size(); i++){
+            /***** PLAYER 1 CONFIGURATION *****/
+            if(!p.isDead() && p.getId() == 1){
+                if(keysPressed.get(i) == KeyEvent.VK_S && !p.checkCollision(Direction.DOWN))
+                    entity_Action.moveDown(p);
+
+                if(keysPressed.get(i) == KeyEvent.VK_W)
+                    entity_Action.moveUp(p);
+
+                if(keysPressed.get(i) == KeyEvent.VK_D && !p.checkCollision(Direction.RIGHT))
+                    if(p.getVirtualX()+p.getWidth() < 500)
+                        entity_Action.moveRight(p);
+
+                if(keysPressed.get(i) == KeyEvent.VK_A && !p.checkCollision(Direction.LEFT))
+                    if(p.getVirtualX() > 0)
+                        entity_Action.moveLeft(p);
+                
+                if(keysPressed.get(i) == KeyEvent.VK_SPACE)
+                    entity_Action.jump(p);
+                p.setUpdate(true);
+            }
+            
+            
+            /***** PLAYER 2 CONFIGURATION *****/
+            if(!p.isDead() && p.getId() == 2){
+                if(keysPressed.get(i) == KeyEvent.VK_DOWN && !p.checkCollision(Direction.DOWN))
+                    entity_Action.moveDown(p);
+
+                if(keysPressed.get(i) == KeyEvent.VK_UP)
+                    entity_Action.moveUp(p);                
+
+                if(keysPressed.get(i) == KeyEvent.VK_RIGHT && !p.checkCollision(Direction.RIGHT))
+                    if(p.getVirtualX()+p.getWidth() < 500)
+                        entity_Action.moveRight(p);
+
+                if(keysPressed.get(i) == KeyEvent.VK_LEFT && !p.checkCollision(Direction.LEFT))
+                    if(p.getVirtualX() > 0)
+                        entity_Action.moveLeft(p);
+                
+                if(keysPressed.get(i) == KeyEvent.VK_NUMPAD0)
+                    entity_Action.jump(p);
+                
+                p.setUpdate(true);
+            }
+        }
+    }
+    
+        
+    public void drawPlayer(Graphics g, Player p){
+        g.setColor(Color.WHITE);
+        g.setFont(new Font("Arial", Font.BOLD, 14));
+        g.drawString("P" +p.getId() , p.getVirtualX()+7, p.getVirtualY());
+        if(!p.isDead())
+            g.drawImage(p.getImg()[p.getImageArrayIndex()], p.getVirtualX(), p.getVirtualY(), this);
+        
+        else
+            g.drawImage(p.getImg()[p.getImg().length-1], p.getVirtualX(), p.getVirtualY()+15, this);
+    }
+    
+    public void drawGameObjects(Graphics g){
+        for(Platform wall : platform)
+            g.drawImage(wall.getImg(), wall.getVirtualX(), wall.getVirtualY(), this);
+        
+        for(Ladder ladder : ladders)
+            g.drawImage(ladder.getImg(), ladder.getVirtualX(), ladder.getVirtualY(), this);
+        
+        for(Kunai kunai : kunais)
+            g.drawImage(kunai.getImg(), kunai.getVirtualX(), kunai.getVirtualY(), this);
+        
+        for(Flag flag : flags)
+            g.drawImage(flag.getImg(), flag.getVirtualX(), flag.getVirtualY(), this);
+    }
+    
+    public void drawScore(Graphics g){
+        g.setColor(Color.WHITE);
+        g.setFont(new Font("Arial", Font.BOLD, 18));
+        g.drawString("Score: " + score, 17, 17);
+    }
+    
+    public void drawGameOver(Graphics g){
+        g.drawImage(new ImageIcon("Images/Level_Complete/1.png").getImage(), this.getWidth()/2-100, this.getHeight()/2-100, this);
+    }
+    
+    public void drawLevelComplete(Graphics g){
+        g.drawImage(new ImageIcon("Images/Level_Complete/2.png").getImage(), -10, 0, this);
+    }
+    
+    public void drawTimer(Graphics g){
+        g.setColor(Color.WHITE);
+        g.setFont(new Font("Arial", Font.BOLD, 18));
+        g.drawString("Time: " + gameTimer, this.getWidth()/2-50, 17);
+    }
+    
+    // Overrides
+    @Override
+    public void paint(Graphics g) {
+        super.paint(g);        
+        Image bufferedImage = createImage(getWidth(),getHeight()); // Pre-render the image before drawing to screen
+        Graphics doubleBufferGraphics = bufferedImage.getGraphics(); // Graphics that will draw the BufferedImage
+        
+        /****** START OF RENDERING ******/
+        
+        if(player.isDead())
+            drawGameOver(doubleBufferGraphics);
+        else if (levelCleared)
+            drawLevelComplete(doubleBufferGraphics);        
+        else{
+            drawGameObjects(doubleBufferGraphics);
+            drawPlayer(doubleBufferGraphics, player);
+            drawScore(doubleBufferGraphics);
+            drawTimer(doubleBufferGraphics);
+        }
+        /****** END OF RENDERING ******/
+        
+        // SHOW THE RENDERED IMAGE TO THE SCREEN
+        g.drawImage(bufferedImage, 0, 0, this);
+    }
+}
